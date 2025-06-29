@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const nodemailer = require('nodemailer');
 const { Server } = require('socket.io');
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const crypto = require('crypto');
 
 const stockURL = 'https://api.joshlei.com/v2/growagarden/stock';
@@ -26,7 +26,7 @@ let latestStockDataJSON = null;
 let latestStockDataObj = null;
 let latestWeatherDataJSON = null;
 let latestWeatherDataObj = null;
-let itemInfo = null;
+let itemInfo = []; // Initialize as empty array
 
 // Store pending verifications and subscriptions
 const pendingVerifications = new Map(); // Map<email, { token: string, timestamp: number }>
@@ -39,15 +39,23 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
 app.use(express.urlencoded({ extended: true }));
+app.use(express.json()); // Added to handle JSON payloads
 
-// Fetch item info on startup
+// Fetch item info on startup and convert object to array
 async function fetchItemInfo() {
   try {
     const response = await fetch(itemInfoURL);
-    itemInfo = await response.json();
+    if (!response.ok) {
+      throw new Error(`HTTP error! Status: ${response.status}`);
+    }
+    const data = await response.json();
+    // Convert object with numeric keys to array
+    itemInfo = Object.values(data).filter(item => item && item.item_id && typeof item.item_id === 'string');
+    console.log('Converted itemInfo to array:', itemInfo.length, 'items'); // Debug log
     broadcastLog('Fetched item info from API.');
   } catch (err) {
     broadcastLog(`Error fetching item info: ${err.toString()}`);
+    itemInfo = []; // Fallback to empty array
   }
 }
 
@@ -124,7 +132,9 @@ function buildStockHtmlEmail(data, recipientEmail) {
     inStockItems.forEach(item => {
       const name = item.display_name || item.item_id || 'Unknown';
       const qty = item.quantity || 0;
-      const iconUrl = itemInfo.find(info => info.item_id === item.item_id)?.icon || `https://api.joshlei.com/v2/growagarden/image/${item.item_id}`;
+      // Safely handle itemInfo as an array
+      const itemData = Array.isArray(itemInfo) ? itemInfo.find(info => info.item_id === item.item_id) : null;
+      const iconUrl = itemData?.icon || `https://api.joshlei.com/v2/growagarden/image/${item.item_id}`;
       html += `<tr><td style="border: 1px solid #ddd; padding: 8px; text-align: center;"><img src="${iconUrl}" alt="${name}" style="width: 32px; height: 32px; object-fit: contain;"></td><td style="border: 1px solid #ddd; padding: 8px;">${name}</td><td style="border: 1px solid #ddd; padding: 8px; text-align: right;">${qty}</td></tr>`;
     });
     html += `</tbody></table><br/>`;
@@ -170,6 +180,9 @@ function sendEmail(subject, htmlBody, recipientEmail) {
 async function pollStockAPI() {
   try {
     const response = await fetch(stockURL);
+    if (!response.ok) {
+      throw new Error(`HTTP error! Status: ${response.status}`);
+    }
     const data = await response.json();
     const newDataJSON = JSON.stringify(data);
 
@@ -177,6 +190,10 @@ async function pollStockAPI() {
       broadcastLog('Stock data changed — checking subscriber selections...');
       latestStockDataJSON = newDataJSON;
       latestStockDataObj = data;
+      // Ensure itemInfo is populated
+      if (!itemInfo.length) {
+        await fetchItemInfo();
+      }
       subscriptions.forEach((selections, email) => {
         const html = buildStockHtmlEmail(data, email);
         if (html) {
@@ -194,6 +211,9 @@ async function pollStockAPI() {
 async function pollWeatherAPI() {
   try {
     const response = await fetch(weatherURL);
+    if (!response.ok) {
+      throw new Error(`HTTP error! Status: ${response.status}`);
+    }
     const data = await response.json();
     const newDataJSON = JSON.stringify(data);
 
@@ -284,7 +304,7 @@ app.get('/', (req, res) => {
     }
     .subscribe-form p {
       color: #ff5555;
-      margin: 0.5rem 0 0;
+      margin: 0.5rem 0;
     }
     .popup {
       display: none;
@@ -358,7 +378,7 @@ app.get('/', (req, res) => {
         <div id="items-section">
           <h3>Items</h3>
           <div class="item-list">
-            ${itemInfo ? itemInfo.map(item => `
+            ${Array.isArray(itemInfo) ? itemInfo.map(item => `
               <label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name}</label>
             `).join('') : '<p>Loading items...</p>'}
           </div>
@@ -380,7 +400,7 @@ app.get('/', (req, res) => {
     const errorMessage = document.getElementById('error-message');
 
     socket.on('log', msg => {
-      terminal.textContent += msg + '\\n';
+      terminal.textContent += msg + '\n';
       terminal.scrollTop = terminal.scrollHeight;
     });
 
