@@ -377,10 +377,12 @@ app.get('/', (req, res) => {
         <input type="hidden" name="email" id="popup-email">
         <div id="items-section">
           <h3>Items</h3>
-          <div class="item-list">
-            ${Array.isArray(itemInfo) ? itemInfo.map(item => `
-              <label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name}</label>
-            `).join('') : '<p>Loading items...</p>'}
+          <div class="item-list" id="item-list-container">
+            ${Array.isArray(itemInfo) && itemInfo.length > 0 ? 
+              itemInfo.map(item => `
+                <label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name || item.item_id}</label>
+              `).join('') : 
+              '<p>Loading items... Please wait or refresh the page.</p>'}
           </div>
         </div>
         <button type="submit">Subscribe</button>
@@ -398,9 +400,11 @@ app.get('/', (req, res) => {
     const itemForm = document.getElementById('item-selection-form');
     const popupEmail = document.getElementById('popup-email');
     const errorMessage = document.getElementById('error-message');
+    const itemListContainer = document.getElementById('item-list-container');
+    const subscribeMessage = document.getElementById('subscribe-message');
 
     socket.on('log', msg => {
-      terminal.textContent += msg + '\n';
+      terminal.textContent += msg + '\\n';
       terminal.scrollTop = terminal.scrollHeight;
     });
 
@@ -408,39 +412,85 @@ app.get('/', (req, res) => {
       e.preventDefault();
       const email = subscribeForm.querySelector('input[name="email"]').value.trim();
       if (!email) {
-        document.getElementById('subscribe-message').textContent = 'Email cannot be empty.';
+        subscribeMessage.textContent = 'Email cannot be empty.';
         return;
       }
 
-      const response = await fetch('/request-verification', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ email })
-      });
-      const result = await response.json();
-      document.getElementById('subscribe-message').textContent = result.message;
-      if (result.success) {
-        popupEmail.value = email;
-        popup.style.display = 'block';
+      try {
+        const response = await fetch('/request-verification', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        });
+        
+        const result = await response.json();
+        subscribeMessage.textContent = result.message;
+        
+        if (result.success) {
+          // Show the popup immediately while waiting for verification
+          popupEmail.value = email;
+          popup.style.display = 'block';
+        }
+      } catch (err) {
+        subscribeMessage.textContent = 'Error sending verification request.';
+        console.error('Error:', err);
       }
     };
 
-    itemForm.onsubmit = function(e) {
+    itemForm.onsubmit = async function(e) {
+      e.preventDefault();
+      const email = popupEmail.value;
       const itemCheckboxes = document.querySelectorAll('input[name="items"]:checked');
+      
       if (itemCheckboxes.length === 0) {
-        e.preventDefault();
         errorMessage.textContent = 'Please select at least one item.';
+        return;
+      }
+
+      const items = Array.from(itemCheckboxes).map(cb => cb.value);
+      
+      try {
+        const response = await fetch('/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, items })
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+          popup.style.display = 'none';
+          subscribeMessage.textContent = 'Successfully subscribed!';
+        } else {
+          errorMessage.textContent = result.message || 'Subscription failed.';
+        }
+      } catch (err) {
+        errorMessage.textContent = 'Error completing subscription.';
+        console.error('Error:', err);
       }
     };
+
+    // Close popup when clicking outside
+    popup.addEventListener('click', function(e) {
+      if (e.target === popup) {
+        popup.style.display = 'none';
+      }
+    });
 
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('subscribed')) {
-      document.getElementById('subscribe-message').textContent = 'Successfully subscribed!';
+      subscribeMessage.textContent = 'Successfully subscribed!';
     } else if (urlParams.get('unsubscribed')) {
-      document.getElementById('subscribe-message').textContent = 'Successfully unsubscribed!';
+      subscribeMessage.textContent = 'Successfully unsubscribed!';
     } else if (urlParams.get('verified')) {
       popupEmail.value = urlParams.get('email');
       popup.style.display = 'block';
+    }
+
+    // Refresh item list if it's empty (in case itemInfo wasn't loaded yet)
+    if (itemListContainer.textContent.includes('Loading items')) {
+      setTimeout(() => {
+        window.location.reload();
+      }, 3000);
     }
   </script>
 </body>
@@ -448,7 +498,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-app.post('/request-verification', async (req, res) => {
+app.post('/request-verification', express.json(), async (req, res) => {
   const email = req.body.email?.trim();
   if (!email) {
     return res.json({ success: false, message: 'Email is required.' });
@@ -456,14 +506,21 @@ app.post('/request-verification', async (req, res) => {
   if (subscriptions.has(email)) {
     return res.json({ success: false, message: 'Email is already subscribed.' });
   }
+  
   sendVerificationEmail(email);
-  res.json({ success: true, message: 'Verification email sent. Please check your inbox.' });
+  res.json({ 
+    success: true, 
+    message: 'Verification email sent. Please check your inbox and click the verification link to continue.'
+  });
 });
 
 app.get('/verify', (req, res) => {
   const { email, token } = req.query;
-  const verification = pendingVerifications.get(email);
+  if (!email || !token) {
+    return res.send('Invalid verification link.');
+  }
 
+  const verification = pendingVerifications.get(email);
   if (!verification || verification.token !== token) {
     return res.send('Invalid or expired verification link.');
   }
@@ -472,17 +529,17 @@ app.get('/verify', (req, res) => {
   res.redirect(`/?verified=true&email=${encodeURIComponent(email)}`);
 });
 
-app.post('/subscribe', (req, res) => {
+app.post('/subscribe', express.json(), (req, res) => {
   const email = req.body.email?.trim();
   const items = Array.isArray(req.body.items) ? req.body.items : [req.body.items].filter(Boolean);
 
   if (!email || items.length === 0) {
-    return res.redirect('/?error=Invalid input');
+    return res.json({ success: false, message: 'Invalid input' });
   }
 
   subscriptions.set(email, new Set(items));
   broadcastLog(`New subscription: ${email} for ${items.length} items`);
-  res.redirect('/?subscribed=true');
+  res.json({ success: true, message: 'Subscription successful!' });
 });
 
 app.get('/unsub', (req, res) => {
