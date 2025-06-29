@@ -26,7 +26,7 @@ let latestStockDataJSON = null;
 let latestStockDataObj = null;
 let latestWeatherDataJSON = null;
 let latestWeatherDataObj = null;
-let itemInfo = null;
+let itemInfo = []; // Initialize as empty array for safety
 
 // Store pending verifications and subscriptions
 const pendingVerifications = new Map(); // Map<email, { token: string, timestamp: number }>
@@ -44,9 +44,21 @@ app.use(express.urlencoded({ extended: true }));
 async function fetchItemInfo() {
   try {
     const response = await fetch(itemInfoURL);
-    itemInfo = await response.json();
-    broadcastLog('Fetched item info from API.');
+    const data = await response.json();
+    // Log the raw response for debugging
+    broadcastLog(`Fetched item info from API. Response: ${JSON.stringify(data).slice(0, 100)}...`);
+    // Handle different response formats
+    if (Array.isArray(data)) {
+      itemInfo = data;
+    } else if (data && Array.isArray(data.data)) {
+      itemInfo = data.data; // Extract array from 'data' property if it exists
+    } else {
+      itemInfo = []; // Fallback to empty array
+      broadcastLog('Error: itemInfo is not an array. Using empty array.');
+    }
+    broadcastLog(`Processed itemInfo with ${itemInfo.length} items.`);
   } catch (err) {
+    itemInfo = []; // Fallback to empty array on error
     broadcastLog(`Error fetching item info: ${err.toString()}`);
   }
 }
@@ -358,9 +370,9 @@ app.get('/', (req, res) => {
         <div id="items-section">
           <h3>Items</h3>
           <div class="item-list">
-            ${itemInfo ? itemInfo.map(item => `
-              <label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name}</label>
-            `).join('') : '<p>Loading items...</p>'}
+            ${Array.isArray(itemInfo) && itemInfo.length > 0 ? itemInfo.map(item => `
+              <label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name || item.item_id || 'Unknown'}</label>
+            `).join('') : '<p>No items available. Please try again later.</p>'}
           </div>
         </div>
         <button type="submit">Subscribe</button>
