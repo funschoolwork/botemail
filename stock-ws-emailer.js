@@ -40,30 +40,44 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.urlencoded({ extended: true }));
 
-// Fetch item info on startup
-async function fetchItemInfo() {
-  try {
-    const response = await fetch(itemInfoURL);
-    const data = await response.json();
-    // Log the raw response for debugging
-    broadcastLog(`Fetched item info from API. Response: ${JSON.stringify(data).slice(0, 100)}...`);
-    // Handle different response formats
-    if (Array.isArray(data)) {
-      itemInfo = data;
-    } else if (data && Array.isArray(data.data)) {
-      itemInfo = data.data; // Extract array from 'data' property if it exists
-    } else {
-      itemInfo = []; // Fallback to empty array
-      broadcastLog('Error: itemInfo is not an array. Using empty array.');
+// Fetch item info with retries
+async function fetchItemInfo(retries = 3, delay = 2000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(itemInfoURL);
+      if (!response.ok) {
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+      const data = await response.json();
+      // Log the full response for debugging (truncate for brevity)
+      broadcastLog(`Fetched item info from API. Response: ${JSON.stringify(data).slice(0, 200)}...`);
+      // Handle different response formats
+      if (Array.isArray(data)) {
+        itemInfo = data;
+      } else if (data && Array.isArray(data.data)) {
+        itemInfo = data.data;
+      } else if (data && Array.isArray(data.items)) {
+        itemInfo = data.items; // Handle alternative 'items' property
+      } else {
+        itemInfo = [];
+        broadcastLog(`Error: itemInfo is not an array (type: ${typeof data}, keys: ${Object.keys(data || {})}). Using empty array.`);
+      }
+      broadcastLog(`Processed itemInfo with ${itemInfo.length} items.`);
+      return; // Exit on success
+    } catch (err) {
+      broadcastLog(`Error fetching item info (attempt ${i + 1}/${retries}): ${err.toString()}`);
+      if (i < retries - 1) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     }
-    broadcastLog(`Processed itemInfo with ${itemInfo.length} items.`);
-  } catch (err) {
-    itemInfo = []; // Fallback to empty array on error
-    broadcastLog(`Error fetching item info: ${err.toString()}`);
   }
+  itemInfo = [];
+  broadcastLog('All retries failed for itemInfo. Using empty array.');
 }
 
+// Fetch item info on startup and periodically
 fetchItemInfo();
+setInterval(fetchItemInfo, 60 * 60 * 1000); // Refresh every hour
 
 function broadcastLog(msg) {
   const timestamp = new Date().toISOString();
@@ -372,7 +386,7 @@ app.get('/', (req, res) => {
           <div class="item-list">
             ${Array.isArray(itemInfo) && itemInfo.length > 0 ? itemInfo.map(item => `
               <label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name || item.item_id || 'Unknown'}</label>
-            `).join('') : '<p>No items available. Please try again later.</p>'}
+            `).join('') : '<p>Unable to load items from the server. Please try again later or contact support.</p>'}
           </div>
         </div>
         <button type="submit">Subscribe</button>
