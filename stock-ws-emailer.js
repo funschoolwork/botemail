@@ -27,6 +27,16 @@ const transporter = nodemailer.createTransport({
   debug: true
 });
 
+// Verify SMTP configuration on startup
+transporter.verify((error, success) => {
+  if (error) {
+    console.error(`[STARTUP] SMTP configuration error: ${error.toString()}`);
+    process.exit(1);
+  } else {
+    console.log('[STARTUP] SMTP configuration verified successfully');
+  }
+});
+
 let latestStockDataJSON = null;
 let latestStockDataObj = null;
 let latestWeatherDataJSON = null;
@@ -43,6 +53,7 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
 app.use(express.urlencoded({ extended: true }));
+app.use(express.json()); // Added to handle JSON bodies for debugging
 
 async function fetchItemInfo(attempt = 1, maxAttempts = 5) {
   try {
@@ -71,10 +82,10 @@ async function fetchItemInfo(attempt = 1, maxAttempts = 5) {
     }
     
     itemInfo = items.filter(item => item.item_id && item.display_name);
-    if (itemInfo.length === 0) {
-      broadcastLog('Warning: Filtered item info resulted in empty array');
-    }
     broadcastLog(`Fetched item info: ${itemInfo.length} items`);
+    if (itemInfo.length > 0) {
+      broadcastLog(`Sample item: ${JSON.stringify(itemInfo[0])}`);
+    }
   } catch (err) {
     broadcastLog(`Error fetching item info: ${err.toString()}`);
     if (attempt < maxAttempts) {
@@ -118,6 +129,11 @@ function buildVerificationEmail(email, token) {
 }
 
 function sendVerificationEmail(email) {
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    broadcastLog(`Invalid email format: ${email}`);
+    return false;
+  }
+
   const token = generateVerificationToken();
   const timestamp = Date.now();
   pendingVerifications.set(email, { token, timestamp });
@@ -129,26 +145,22 @@ function sendVerificationEmail(email) {
     html: buildVerificationEmail(email, token),
   };
 
-  transporter.sendMail(mailOptions, (error, info) => {
-    if (error) {
-      broadcastLog(`Error sending verification email to ${email}: ${error.toString()}`);
-      if (error.code === 'EAUTH') {
-        broadcastLog('Authentication failed. Ensure EMAIL_PASS is a Gmail App Password (Google Account > Security > 2-Step Verification > App Passwords).');
-      } else if (error.code === 'EENVELOPE') {
-        broadcastLog('Invalid email address or SMTP server issue.');
+  return new Promise((resolve, reject) => {
+    transporter.sendMail(mailOptions, (error, info) => {
+      if (error) {
+        broadcastLog(`Error sending verification email to ${email}: ${error.toString()}`);
+        if (error.code === 'EAUTH') {
+          broadcastLog('Authentication failed. Ensure EMAIL_PASS is a Gmail App Password (Google Account > Security > 2-Step Verification > App Passwords).');
+        } else if (error.code === 'EENVELOPE') {
+          broadcastLog('Invalid email address or SMTP server issue.');
+        }
+        reject(error);
+      } else {
+        broadcastLog(`Verification email sent to ${email}: ${info.response}`);
+        broadcastLog(`Please check ${email}'s spam/junk folder if the email doesn't appear in inbox.`);
+        resolve(info);
       }
-    } else {
-      broadcastLog(`Verification email sent to ${email}: ${info.response}`);
-      broadcastLog(`Please check ${email}'s spam/junk folder if the email doesn't appear in inbox.`);
-    }
-  });
-
-  transporter.verify((error, success) => {
-    if (error) {
-      broadcastLog(`SMTP configuration error: ${error.toString()}`);
-    } else {
-      broadcastLog('SMTP configuration verified successfully');
-    }
+    });
   });
 }
 
@@ -213,15 +225,19 @@ function sendEmail(subject, htmlBody, recipientEmail) {
     html: htmlBody,
   };
 
-  transporter.sendMail(mailOptions, (error, info) => {
-    if (error) {
-      broadcastLog(`Error sending email to ${recipientEmail}: ${error.toString()}`);
-      if (error.code === 'EAUTH') {
-        broadcastLog('Authentication failed. Ensure EMAIL_PASS is a Gmail App Password.');
+  return new Promise((resolve, reject) => {
+    transporter.sendMail(mailOptions, (error, info) => {
+      if (error) {
+        broadcastLog(`Error sending email to ${recipientEmail}: ${error.toString()}`);
+        if (error.code === 'EAUTH') {
+          broadcastLog('Authentication failed. Ensure EMAIL_PASS is a Gmail App Password.');
+        }
+        reject(error);
+      } else {
+        broadcastLog(`Email sent to ${recipientEmail}: ${info.response}`);
+        resolve(info);
       }
-    } else {
-      broadcastLog(`Email sent to ${recipientEmail}: ${info.response}`);
-    }
+    });
   });
 }
 
@@ -339,7 +355,13 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
+  // Ensure itemInfo is populated before rendering
+  if (itemInfo.length === 0) {
+    broadcastLog('itemInfo is empty, attempting to fetch before rendering...');
+    await fetchItemInfo();
+  }
+
   res.send(`
 <!DOCTYPE html>
 <html>
@@ -494,56 +516,76 @@ app.get('/', (req, res) => {
     });
 
     async function retryFetchItems() {
+      console.log('Attempting to refresh items...');
       try {
         const response = await fetch('/refresh-items', { method: 'POST' });
         const result = await response.json();
         if (result.success) {
+          console.log('Items refreshed, reloading page...');
           window.location.reload();
         } else {
           errorMessage.textContent = 'Failed to refresh items: ' + result.message;
+          console.error('Refresh failed:', result.message);
         }
       } catch (err) {
         errorMessage.textContent = 'Error refreshing items: ' + err.message;
+        console.error('Refresh error:', err.message);
       }
     }
 
     subscribeForm.onsubmit = async function(e) {
       e.preventDefault();
       const email = subscribeForm.querySelector('input[name="email"]').value.trim();
+      console.log('Submitting email:', email);
       if (!email) {
         document.getElementById('subscribe-message').textContent = 'Email cannot be empty.';
+        console.error('Email is empty');
         return;
       }
 
-      const response = await fetch('/request-verification', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ email })
-      });
-      const result = await response.json();
-      document.getElementById('subscribe-message').textContent = result.message;
-      if (result.success) {
-        popupEmail.value = email;
-        popup.style.display = 'block';
+      try {
+        const response = await fetch('/request-verification', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ email })
+        });
+        const result = await response.json();
+        document.getElementById('subscribe-message').textContent = result.message;
+        console.log('Request verification response:', result);
+        if (result.success) {
+          popupEmail.value = email;
+          popup.style.display = 'block';
+          console.log('Popup displayed with email:', email);
+        } else {
+          console.error('Verification request failed:', result.message);
+        }
+      } catch (err) {
+        document.getElementById('subscribe-message').textContent = 'Error: ' + err.message;
+        console.error('Verification request error:', err.message);
       }
     };
 
     itemForm.onsubmit = function(e) {
       const itemCheckboxes = document.querySelectorAll('input[name="items"]:checked');
+      console.log('Selected items:', itemCheckboxes.length);
       if (itemCheckboxes.length === 0) {
         e.preventDefault();
         errorMessage.textContent = 'Please select at least one item.';
+        console.error('No items selected');
       }
     };
 
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('subscribed')) {
       document.getElementById('subscribe-message').textContent = 'Successfully subscribed!';
+      console.log('Subscription confirmed');
     } else if (urlParams.get('unsubscribed')) {
       document.getElementById('subscribe-message').textContent = 'Successfully unsubscribed!';
+      console.log('Unsubscription confirmed');
     } else if (urlParams.get('verified')) {
       popupEmail.value = urlParams.get('email');
       popup.style.display = 'block';
+      console.log('Popup opened for verified email:', urlParams.get('email'));
     }
   </script>
 </body>
@@ -552,34 +594,55 @@ app.get('/', (req, res) => {
 });
 
 app.post('/request-verification', async (req, res) => {
+  broadcastLog(`Received verification request: ${JSON.stringify(req.body)}`);
   const email = req.body.email?.trim();
   if (!email) {
+    broadcastLog('Verification request failed: Email is required');
     return res.status(400).json({ success: false, message: 'Email is required.' });
   }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    broadcastLog(`Verification request failed: Invalid email format: ${email}`);
+    return res.status(400).json({ success: false, message: 'Invalid email format.' });
+  }
   if (subscriptions.has(email)) {
+    broadcastLog(`Verification request failed: Email already subscribed: ${email}`);
     return res.status(400).json({ success: false, message: 'Email is already subscribed.' });
   }
-  sendVerificationEmail(email);
-  res.json({ success: true, message: 'Verification email sent. Please check your inbox and spam folder.' });
+  try {
+    const success = await sendVerificationEmail(email);
+    if (success) {
+      res.json({ success: true, message: 'Verification email sent. Please check your inbox and spam folder.' });
+    } else {
+      res.status(400).json({ success: false, message: 'Failed to send verification email.' });
+    }
+  } catch (err) {
+    broadcastLog(`Verification request error for ${email}: ${err.toString()}`);
+    res.status(500).json({ success: false, message: 'Server error while sending verification email.' });
+  }
 });
 
 app.get('/verify', (req, res) => {
   const { email, token } = req.query;
+  broadcastLog(`Verification attempt for ${email}`);
   const verification = pendingVerifications.get(email);
 
   if (!verification || verification.token !== token) {
+    broadcastLog(`Verification failed for ${email}: Invalid or expired token`);
     return res.status(400).send('Invalid or expired verification link.');
   }
 
   pendingVerifications.delete(email);
+  broadcastLog(`Verification successful for ${email}`);
   res.redirect(`/?verified=true&email=${encodeURIComponent(email)}`);
 });
 
 app.post('/subscribe', (req, res) => {
   const email = req.body.email?.trim();
   const items = Array.isArray(req.body.items) ? req.body.items : [req.body.items].filter(Boolean);
+  broadcastLog(`Subscription attempt: ${email} with ${items.length} items`);
 
   if (!email || items.length === 0) {
+    broadcastLog(`Subscription failed: Invalid input (email: ${email}, items: ${items.length})`);
     return res.redirect('/?error=Invalid input');
   }
 
@@ -590,10 +653,12 @@ app.post('/subscribe', (req, res) => {
 
 app.get('/unsub', (req, res) => {
   const email = req.query.email?.trim();
+  broadcastLog(`Unsubscribe attempt for ${email}`);
   if (subscriptions.delete(email)) {
     broadcastLog(`Unsubscribed: ${email}`);
     res.redirect('/?unsubscribed=true');
   } else {
+    broadcastLog(`Unsubscribe failed: Email not found: ${email}`);
     res.status(404).send('Email not found in subscriptions.');
   }
 });
@@ -610,27 +675,26 @@ app.post('/refresh-items', async (req, res) => {
 
 app.get('/test-email', async (req, res) => {
   const testEmail = req.query.email || 'test@example.com';
+  broadcastLog(`Sending test verification email to ${testEmail}`);
   try {
-    await new Promise((resolve, reject) => {
-      transporter.sendMail({
-        from: `"Grow A Garden Bot" <${EMAIL_USER}>`,
-        to: testEmail,
-        subject: 'Test Email from Grow A Garden',
-        html: '<p>This is a test email to verify email configuration.</p>'
-      }, (error, info) => {
-        if (error) {
-          broadcastLog(`Test email error: ${error.toString()}`);
-          reject(error);
-        } else {
-          broadcastLog(`Test email sent to ${testEmail}: ${info.response}`);
-          resolve(info);
-        }
-      });
-    });
-    res.json({ success: true, message: 'Test email sent.' });
+    const success = await sendVerificationEmail(testEmail);
+    if (success) {
+      res.json({ success: true, message: 'Test verification email sent.' });
+    } else {
+      res.status(400).json({ success: false, message: 'Failed to send test verification email.' });
+    }
   } catch (err) {
+    broadcastLog(`Test email error: ${err.toString()}`);
     res.status(500).json({ success: false, message: 'Failed to send test email.' });
   }
+});
+
+app.get('/debug-item-info', (req, res) => {
+  res.json({
+    itemInfoCount: itemInfo.length,
+    itemInfoSample: itemInfo.slice(0, 5),
+    lastFetched: itemInfo.length > 0 ? new Date().toISOString() : 'Not fetched'
+  });
 });
 
 app.get('/health', (req, res) => {
