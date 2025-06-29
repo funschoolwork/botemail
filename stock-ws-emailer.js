@@ -55,15 +55,19 @@ async function fetchItemInfo(attempt = 1, maxAttempts = 5) {
     const data = await response.json();
     broadcastLog(`Raw item info response: ${JSON.stringify(data).substring(0, 500)}...`);
     
-    let items = data;
-    if (!Array.isArray(data)) {
-      if (data.items && Array.isArray(data.items)) {
-        items = data.items;
-        broadcastLog('Extracted item array from "items" property');
-      } else {
-        broadcastLog('Item info is not an array or does not contain "items". Using empty array.');
-        items = [];
-      }
+    let items = [];
+    if (Array.isArray(data)) {
+      items = data;
+      broadcastLog('Item info is an array');
+    } else if (data.items && Array.isArray(data.items)) {
+      items = data.items;
+      broadcastLog('Extracted item array from "items" property');
+    } else if (typeof data === 'object' && data !== null) {
+      items = Object.values(data);
+      broadcastLog('Converted dictionary to array using Object.values');
+    } else {
+      broadcastLog('Item info is not an array, does not contain "items", or is not a dictionary. Using empty array.');
+      items = [];
     }
     
     itemInfo = items.filter(item => item.item_id && item.display_name);
