@@ -4,6 +4,8 @@ const nodemailer = require('nodemailer');
 const { Server } = require('socket.io');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const stockURL = 'https://api.joshlei.com/v2/growagarden/stock';
 const weatherURL = 'https://api.joshlei.com/v2/growagarden/weather';
@@ -26,12 +28,11 @@ let latestStockDataJSON = null;
 let latestStockDataObj = null;
 let latestWeatherDataJSON = null;
 let latestWeatherDataObj = null;
-let itemInfo = []; // Initialize as empty array
+let itemInfo = [];
 
-// Store pending verifications and subscriptions
-const pendingVerifications = new Map(); // Map<email, { token: string, timestamp: number }>
-const verifiedEmails = new Map(); // Map<email, { verified: boolean, timestamp: number }>
-const subscriptions = new Map(); // Map<email, Set<item_id>>
+const pendingVerifications = new Map();
+const verifiedEmails = new Map();
+const subscriptions = new Map();
 
 const app = express();
 const server = http.createServer(app);
@@ -41,25 +42,21 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Fetch item info on startup and convert object to array
 async function fetchItemInfo() {
   try {
     const response = await fetch(itemInfoURL);
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
     const data = await response.json();
     itemInfo = Object.values(data).filter(item => item && item.item_id && typeof item.item_id === 'string');
-    console.log('Converted itemInfo to array:', itemInfo.length, 'items');
+    console.log('Item info loaded:', itemInfo.length, 'items');
     broadcastLog('Fetched item info from API.');
   } catch (err) {
     broadcastLog(`Error fetching item info: ${err.toString()}`);
-    itemInfo = []; // Fallback to empty array
+    itemInfo = [];
   }
 }
-
-fetchItemInfo();
 
 function broadcastLog(msg) {
   const timestamp = new Date().toISOString();
@@ -130,11 +127,8 @@ function sendVerificationEmail(email) {
   };
 
   transporter.sendMail(mailOptions, (error, info) => {
-    if (error) {
-      broadcastLog(`Error sending verification email to ${email}: ${error.toString()}`);
-    } else {
-      broadcastLog(`Verification email sent to ${email}: ${info.response}`);
-    }
+    if (error) broadcastLog(`Error sending verification email to ${email}: ${error.toString()}`);
+    else broadcastLog(`Verification email sent to ${email}: ${info.response}`);
   });
 }
 
@@ -158,9 +152,7 @@ function buildStockHtmlEmail(data, recipientEmail) {
 
   const allStockItems = [];
   ['seed_stock', 'gear_stock', 'egg_stock', 'cosmetic_stock', 'event_stock'].forEach(category => {
-    if (Array.isArray(data[category])) {
-      allStockItems.push(...data[category]);
-    }
+    if (Array.isArray(data[category])) allStockItems.push(...data[category]);
   });
 
   const inStockItems = allStockItems.filter(item => userSelections.has(item.item_id) && item.quantity > 0);
@@ -196,10 +188,7 @@ function buildStockHtmlEmail(data, recipientEmail) {
       `;
     });
 
-    html += `
-        </tbody>
-      </table>
-    `;
+    html += `</tbody></table>`;
   } else {
     return null;
   }
@@ -281,20 +270,15 @@ function sendEmail(subject, htmlBody, recipientEmail) {
   };
 
   transporter.sendMail(mailOptions, (error, info) => {
-    if (error) {
-      broadcastLog(`Error sending email to ${recipientEmail}: ${error.toString()}`);
-    } else {
-      broadcastLog(`Email sent to ${recipientEmail}: ${info.response}`);
-    }
+    if (error) broadcastLog(`Error sending email to ${recipientEmail}: ${error.toString()}`);
+    else broadcastLog(`Email sent to ${recipientEmail}: ${info.response}`);
   });
 }
 
 async function pollStockAPI() {
   try {
     const response = await fetch(stockURL);
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
     const data = await response.json();
     const newDataJSON = JSON.stringify(data);
 
@@ -302,14 +286,11 @@ async function pollStockAPI() {
       broadcastLog('Stock data changed — checking subscriber selections...');
       latestStockDataJSON = newDataJSON;
       latestStockDataObj = data;
-      if (!itemInfo.length) {
-        await fetchItemInfo();
-      }
+      if (!itemInfo.length) await fetchItemInfo();
+      
       subscriptions.forEach((selections, email) => {
         const html = buildStockHtmlEmail(data, email);
-        if (html) {
-          sendEmail('🌱 Grow A Garden Stock Updated!', html, email);
-        }
+        if (html) sendEmail('🌱 Grow A Garden Stock Updated!', html, email);
       });
     } else {
       broadcastLog('Polled Stock API — no changes detected.');
@@ -322,9 +303,7 @@ async function pollStockAPI() {
 async function pollWeatherAPI() {
   try {
     const response = await fetch(weatherURL);
-    if (!response.ok) {
-      throw new Error(`HTTP error! Status: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
     const data = await response.json();
     const newDataJSON = JSON.stringify(data);
 
@@ -336,8 +315,11 @@ async function pollWeatherAPI() {
       if (activeEvent && (!prevActiveEvent || activeEvent.weather_id !== prevActiveEvent.weather_id)) {
         broadcastLog(`New active weather event: ${activeEvent.weather_name}`);
         subscriptions.forEach((_, email) => {
-          sendEmail(`🌦️ Grow A Garden Weather Event: ${activeEvent.weather_name}`, 
-                   buildWeatherHtmlEmail(activeEvent, data.discord_invite, email), email);
+          sendEmail(
+            `🌦️ Grow A Garden Weather Event: ${activeEvent.weather_name}`, 
+            buildWeatherHtmlEmail(activeEvent, data.discord_invite, email), 
+            email
+          );
         });
       } else if (!activeEvent && prevActiveEvent) {
         broadcastLog(`Weather event ended: ${prevActiveEvent.weather_name}`);
@@ -360,21 +342,19 @@ setInterval(pollWeatherAPI, 15000);
 pollStockAPI();
 pollWeatherAPI();
 
-// Clean up expired verification tokens (older than 24 hours)
 setInterval(() => {
   const now = Date.now();
-  const expirationTime = 24 * 60 * 60 * 1000; // 24 hours
+  const expirationTime = 24 * 60 * 60 * 1000;
   for (const [email, { timestamp }] of pendingVerifications) {
     if (now - timestamp > expirationTime) {
       pendingVerifications.delete(email);
       broadcastLog(`Removed expired verification token for ${email}`);
     }
   }
-}, 60 * 60 * 1000); // Run every hour
+}, 60 * 60 * 1000);
 
 app.get('/', (req, res) => {
-  res.send(`
-<!DOCTYPE html>
+  let html = `<!DOCTYPE html>
 <html>
 <head>
   <title>Grow A Garden - Live Logs</title>
@@ -595,9 +575,9 @@ app.get('/', (req, res) => {
         <div id="items-section">
           <div class="item-list" id="item-list-container">
             ${Array.isArray(itemInfo) && itemInfo.length > 0 ? 
-              itemInfo.map(item => `
-                <label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name || item.item_id}</label>
-              `).join('') : 
+              itemInfo.map(item => 
+                `<label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name || item.item_id}</label>`
+              ).join('') : 
               '<div class="loading">Loading available items</div>'}
           </div>
         </div>
@@ -749,7 +729,6 @@ app.get('/', (req, res) => {
         clearInterval(verificationTimer);
       }
       
-      // Check every 5 seconds if email was verified
       verificationTimer = setInterval(async () => {
         try {
           const response = await fetch('/check-verification?email=' + encodeURIComponent(currentEmail));
@@ -761,15 +740,14 @@ app.get('/', (req, res) => {
             popupEmail.value = currentEmail;
             subscribePopup.style.display = 'block';
             
-            // Reload items if not loaded
             if (itemListContainer.textContent.includes('Loading')) {
-              const response = await fetch(itemInfoURL);
+              const response = await fetch('/refresh-items');
               const data = await response.json();
               const items = Object.values(data).filter(item => item && item.item_id && typeof item.item_id === 'string');
               
-              itemListContainer.innerHTML = items.map(item => `
-                <label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name || item.item_id}</label>
-              `).join('');
+              itemListContainer.innerHTML = items.map(item => 
+                `<label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name || item.item_id}</label>`
+              ).join('');
             }
           }
         } catch (err) {
@@ -778,7 +756,6 @@ app.get('/', (req, res) => {
       }, 5000);
     }
 
-    // Close popups when clicking outside
     [verificationPopup, subscribePopup].forEach(popup => {
       popup.addEventListener('click', function(e) {
         if (e.target === popup) {
@@ -790,7 +767,6 @@ app.get('/', (req, res) => {
       });
     });
 
-    // Handle page load with URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('verified') && urlParams.get('email')) {
       currentEmail = urlParams.get('email');
@@ -802,7 +778,6 @@ app.get('/', (req, res) => {
       showMessage('Successfully unsubscribed.', 'success');
     }
 
-    // Refresh item list if it's empty (in case itemInfo wasn't loaded yet)
     if (itemListContainer.textContent.includes('Loading')) {
       setTimeout(() => {
         fetch('/refresh-items').then(() => window.location.reload());
@@ -810,29 +785,20 @@ app.get('/', (req, res) => {
     }
   </script>
 </body>
-</html>
-  `);
+</html>`;
+
+  res.send(html);
 });
 
 app.get('/check-verification', (req, res) => {
   const email = req.query.email?.trim();
-  if (!email) {
-    return res.json({ verified: false });
-  }
-  
-  // Check if email is in verifiedEmails map
-  const isVerified = verifiedEmails.has(email);
-  res.json({ verified: isVerified });
+  res.json({ verified: verifiedEmails.has(email) });
 });
 
-app.post('/request-verification', express.json(), async (req, res) => {
+app.post('/request-verification', express.json(), (req, res) => {
   const email = req.body.email?.trim();
-  if (!email) {
-    return res.json({ success: false, message: 'Email is required.' });
-  }
-  if (subscriptions.has(email)) {
-    return res.json({ success: false, message: 'Email is already subscribed.' });
-  }
+  if (!email) return res.json({ success: false, message: 'Email is required.' });
+  if (subscriptions.has(email)) return res.json({ success: false, message: 'Email is already subscribed.' });
   
   sendVerificationEmail(email);
   res.json({ 
@@ -843,14 +809,10 @@ app.post('/request-verification', express.json(), async (req, res) => {
 
 app.get('/verify', (req, res) => {
   const { email, token } = req.query;
-  if (!email || !token) {
-    return res.send('Invalid verification link.');
-  }
+  if (!email || !token) return res.send('Invalid verification link.');
 
   const verification = pendingVerifications.get(email);
-  if (!verification || verification.token !== token) {
-    return res.send('Invalid or expired verification link.');
-  }
+  if (!verification || verification.token !== token) return res.send('Invalid or expired verification link.');
 
   pendingVerifications.delete(email);
   verifiedEmails.set(email, { verified: true, timestamp: Date.now() });
@@ -861,13 +823,8 @@ app.post('/subscribe', express.json(), (req, res) => {
   const email = req.body.email?.trim();
   const items = Array.isArray(req.body.items) ? req.body.items : [req.body.items].filter(Boolean);
 
-  if (!email || items.length === 0) {
-    return res.json({ success: false, message: 'Invalid input' });
-  }
-
-  if (!verifiedEmails.has(email)) {
-    return res.json({ success: false, message: 'Email not verified' });
-  }
+  if (!email || items.length === 0) return res.json({ success: false, message: 'Invalid input' });
+  if (!verifiedEmails.has(email)) return res.json({ success: false, message: 'Email not verified' });
 
   subscriptions.set(email, new Set(items));
   broadcastLog(`New subscription: ${email} for ${items.length} items`);
@@ -887,9 +844,10 @@ app.get('/unsub', (req, res) => {
 
 app.get('/refresh-items', async (req, res) => {
   await fetchItemInfo();
-  res.send('Items refreshed');
+  res.json(itemInfo);
 });
 
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  fetchItemInfo();
 });
