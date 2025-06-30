@@ -30,6 +30,7 @@ let itemInfo = []; // Initialize as empty array
 
 // Store pending verifications and subscriptions
 const pendingVerifications = new Map(); // Map<email, { token: string, timestamp: number }>
+const verifiedEmails = new Map(); // Map<email, { verified: boolean, timestamp: number }>
 const subscriptions = new Map(); // Map<email, Set<item_id>>
 
 const app = express();
@@ -39,7 +40,7 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json()); // Added to handle JSON payloads
+app.use(express.json());
 
 // Fetch item info on startup and convert object to array
 async function fetchItemInfo() {
@@ -49,9 +50,8 @@ async function fetchItemInfo() {
       throw new Error(`HTTP error! Status: ${response.status}`);
     }
     const data = await response.json();
-    // Convert object with numeric keys to array
     itemInfo = Object.values(data).filter(item => item && item.item_id && typeof item.item_id === 'string');
-    console.log('Converted itemInfo to array:', itemInfo.length, 'items'); // Debug log
+    console.log('Converted itemInfo to array:', itemInfo.length, 'items');
     broadcastLog('Fetched item info from API.');
   } catch (err) {
     broadcastLog(`Error fetching item info: ${err.toString()}`);
@@ -79,11 +79,41 @@ function generateVerificationToken() {
 function buildVerificationEmail(email, token) {
   const verificationUrl = `https://botemail-8wvg.onrender.com/verify?email=${encodeURIComponent(email)}&token=${token}`;
   return `
-    <h2>Grow A Garden Subscription Verification</h2>
-    <p>Please verify your email address to subscribe to Grow A Garden updates.</p>
-    <p><a href="${verificationUrl}" style="padding: 10px 20px; background: #6a9955; color: #fff; text-decoration: none; border-radius: 5px;">Verify and Subscribe</a></p>
-    <p>If you did not request this, please ignore this email.</p>
-    <p style="font-size: 12px; color: #666;">This link will expire in 24 hours.</p>
+    <div style="max-width: 600px; margin: 0 auto; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+      <div style="background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%); 
+                  backdrop-filter: blur(10px); 
+                  border-radius: 20px; 
+                  border: 1px solid rgba(255,255,255,0.2);
+                  padding: 30px;
+                  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);">
+        <div style="text-align: center; margin-bottom: 25px;">
+          <h1 style="color: #6a9955; font-size: 28px; margin-bottom: 10px;">🌱 Grow A Garden</h1>
+          <p style="color: #d4d4d4; font-size: 16px; margin-bottom: 25px;">Please verify your email address to subscribe to updates</p>
+        </div>
+        
+        <div style="text-align: center; margin-bottom: 30px;">
+          <a href="${verificationUrl}" 
+             style="display: inline-block; 
+                    padding: 12px 30px; 
+                    background: linear-gradient(135deg, #6a9955 0%, #4a7a3a 100%); 
+                    color: white; 
+                    text-decoration: none; 
+                    border-radius: 30px; 
+                    font-weight: 500;
+                    box-shadow: 0 4px 15px rgba(106, 153, 85, 0.3);
+                    transition: all 0.3s ease;">
+            Verify Email Address
+          </a>
+        </div>
+        
+        <p style="color: #a0a0a0; font-size: 14px; text-align: center; margin-bottom: 5px;">
+          This link will expire in 24 hours.
+        </p>
+        <p style="color: #a0a0a0; font-size: 14px; text-align: center;">
+          If you didn't request this, please ignore this email.
+        </p>
+      </div>
+    </div>
   `;
 }
 
@@ -112,10 +142,20 @@ function buildStockHtmlEmail(data, recipientEmail) {
   const userSelections = subscriptions.get(recipientEmail);
   if (!userSelections) return null;
 
-  let html = `<h2>Grow A Garden Stock Update</h2>`;
-  let hasItems = false;
+  let html = `
+    <div style="max-width: 600px; margin: 0 auto; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+      <div style="background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%); 
+                  backdrop-filter: blur(10px); 
+                  border-radius: 20px; 
+                  border: 1px solid rgba(255,255,255,0.2);
+                  padding: 30px;
+                  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <h1 style="color: #6a9955; font-size: 24px; margin-bottom: 5px;">🌱 Stock Update</h1>
+          <p style="color: #d4d4d4; font-size: 14px;">Your subscribed items are now available!</p>
+        </div>
+  `;
 
-  // Aggregate all stock items from API
   const allStockItems = [];
   ['seed_stock', 'gear_stock', 'egg_stock', 'cosmetic_stock', 'event_stock'].forEach(category => {
     if (Array.isArray(data[category])) {
@@ -126,38 +166,110 @@ function buildStockHtmlEmail(data, recipientEmail) {
   const inStockItems = allStockItems.filter(item => userSelections.has(item.item_id) && item.quantity > 0);
 
   if (inStockItems.length > 0) {
-    hasItems = true;
-    html += `<table style="border-collapse: collapse; width: 100%; max-width: 600px;">`;
-    html += `<thead><tr><th style="border: 1px solid #ddd; padding: 8px;">Icon</th><th style="border: 1px solid #ddd; padding: 8px;">Item</th><th style="border: 1px solid #ddd; padding: 8px;">Quantity</th></tr></thead><tbody>`;
+    html += `
+      <table style="width: 100%; border-collapse: separate; border-spacing: 0 10px; margin-bottom: 25px;">
+        <thead>
+          <tr>
+            <th style="text-align: left; padding: 8px 12px; color: #a0a0a0; font-weight: normal; border-bottom: 1px solid rgba(255,255,255,0.1);">Item</th>
+            <th style="text-align: right; padding: 8px 12px; color: #a0a0a0; font-weight: normal; border-bottom: 1px solid rgba(255,255,255,0.1);">Quantity</th>
+          </tr>
+        </thead>
+        <tbody>
+    `;
+
     inStockItems.forEach(item => {
       const name = item.display_name || item.item_id || 'Unknown';
       const qty = item.quantity || 0;
-      // Safely handle itemInfo as an array
       const itemData = Array.isArray(itemInfo) ? itemInfo.find(info => info.item_id === item.item_id) : null;
       const iconUrl = itemData?.icon || `https://api.joshlei.com/v2/growagarden/image/${item.item_id}`;
-      html += `<tr><td style="border: 1px solid #ddd; padding: 8px; text-align: center;"><img src="${iconUrl}" alt="${name}" style="width: 32px; height: 32px; object-fit: contain;"></td><td style="border: 1px solid #ddd; padding: 8px;">${name}</td><td style="border: 1px solid #ddd; padding: 8px; text-align: right;">${qty}</td></tr>`;
+      
+      html += `
+        <tr style="background: rgba(255,255,255,0.03); border-radius: 8px;">
+          <td style="padding: 12px; border-radius: 8px 0 0 8px;">
+            <div style="display: flex; align-items: center;">
+              <img src="${iconUrl}" alt="${name}" style="width: 32px; height: 32px; object-fit: contain; margin-right: 12px; border-radius: 4px;">
+              <span style="color: #d4d4d4;">${name}</span>
+            </div>
+          </td>
+          <td style="padding: 12px; text-align: right; border-radius: 0 8px 8px 0; color: #6a9955; font-weight: 500;">${qty}</td>
+        </tr>
+      `;
     });
-    html += `</tbody></table><br/>`;
+
+    html += `
+        </tbody>
+      </table>
+    `;
+  } else {
+    return null;
   }
 
-  if (!hasItems) return null;
+  html += `
+        <div style="text-align: center; margin-top: 30px;">
+          <a href="https://botemail-8wvg.onrender.com/unsub?email=${encodeURIComponent(recipientEmail)}" 
+             style="color: #a0a0a0; font-size: 12px; text-decoration: none;">
+            Unsubscribe from these notifications
+          </a>
+        </div>
+      </div>
+    </div>
+  `;
 
-  html += `<p>Received update from Grow A Garden API feed.</p>`;
-  html += `<p style="font-size: 12px; color: #666;"><a href="https://botemail-8wvg.onrender.com/unsub?email=${encodeURIComponent(recipientEmail)}">Unsubscribe</a></p>`;
   return html;
 }
 
 function buildWeatherHtmlEmail(weatherEvent, discordInvite, recipientEmail) {
   const duration = weatherEvent.duration ? `${Math.floor(weatherEvent.duration / 60)} minutes` : 'Unknown';
-  let html = `<h2>Grow A Garden Weather Event</h2>`;
-  html += `<p><strong>Weather Event:</strong> ${weatherEvent.weather_name || weatherEvent.weather_id || 'Unknown'}</p>`;
-  html += `<p><strong>Duration:</strong> ${duration}</p>`;
-  if (discordInvite) {
-    html += `<p><strong>Join the Community:</strong> <a href="${discordInvite}">Discord Invite</a></p>`;
-  }
-  html += `<p>New weather event detected in Grow A Garden!</p>`;
-  html += `<p style="font-size: 12px; color: #666;"><a href="https://botemail-8wvg.onrender.com/unsub?email=${encodeURIComponent(recipientEmail)}">Unsubscribe</a></p>`;
-  return html;
+  
+  return `
+    <div style="max-width: 600px; margin: 0 auto; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+      <div style="background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%); 
+                  backdrop-filter: blur(10px); 
+                  border-radius: 20px; 
+                  border: 1px solid rgba(255,255,255,0.2);
+                  padding: 30px;
+                  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <h1 style="color: #6a9955; font-size: 24px; margin-bottom: 5px;">🌦️ Weather Event</h1>
+          <p style="color: #d4d4d4; font-size: 14px;">New weather detected in Grow A Garden!</p>
+        </div>
+        
+        <div style="background: rgba(255,255,255,0.03); border-radius: 8px; padding: 20px; margin-bottom: 25px;">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+            <span style="color: #a0a0a0;">Event:</span>
+            <span style="color: #d4d4d4; font-weight: 500;">${weatherEvent.weather_name || weatherEvent.weather_id || 'Unknown'}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span style="color: #a0a0a0;">Duration:</span>
+            <span style="color: #d4d4d4; font-weight: 500;">${duration}</span>
+          </div>
+        </div>
+        
+        ${discordInvite ? `
+        <div style="text-align: center; margin-bottom: 25px;">
+          <a href="${discordInvite}" 
+             style="display: inline-block; 
+                    padding: 10px 20px; 
+                    background: linear-gradient(135deg, #5865F2 0%, #3B45B5 100%); 
+                    color: white; 
+                    text-decoration: none; 
+                    border-radius: 30px; 
+                    font-weight: 500;
+                    box-shadow: 0 4px 15px rgba(88, 101, 242, 0.3);">
+            Join Discord Community
+          </a>
+        </div>
+        ` : ''}
+        
+        <div style="text-align: center; margin-top: 30px;">
+          <a href="https://botemail-8wvg.onrender.com/unsub?email=${encodeURIComponent(recipientEmail)}" 
+             style="color: #a0a0a0; font-size: 12px; text-decoration: none;">
+            Unsubscribe from these notifications
+          </a>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function sendEmail(subject, htmlBody, recipientEmail) {
@@ -190,7 +302,6 @@ async function pollStockAPI() {
       broadcastLog('Stock data changed — checking subscriber selections...');
       latestStockDataJSON = newDataJSON;
       latestStockDataObj = data;
-      // Ensure itemInfo is populated
       if (!itemInfo.length) {
         await fetchItemInfo();
       }
@@ -268,7 +379,7 @@ app.get('/', (req, res) => {
 <head>
   <title>Grow A Garden - Live Logs</title>
   <style>
-    body { background: #1e1e1e; color: #d4d4d4; font-family: monospace; margin: 0; padding: 0; }
+    body { background: #1e1e1e; color: #d4d4d4; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; }
     #terminal {
       padding: 1rem;
       height: 70vh;
@@ -277,34 +388,78 @@ app.get('/', (req, res) => {
       background: #121212;
       border: 1px solid #333;
       box-sizing: border-box;
+      font-family: monospace;
+      border-radius: 8px;
+      margin: 20px auto;
+      max-width: 1000px;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 20px;
     }
     .subscribe-form {
       text-align: center;
-      padding: 1rem;
-      background: #1e1e1e;
+      padding: 2rem;
+      background: rgba(30, 30, 30, 0.8);
+      backdrop-filter: blur(10px);
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      margin: 20px auto;
+      max-width: 600px;
+      box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.1);
     }
     .subscribe-form input[type="email"] {
-      padding: 0.5rem;
+      padding: 12px 15px;
       font-size: 1rem;
-      background: #333;
+      background: rgba(40, 40, 40, 0.8);
       color: #d4d4d4;
-      border: 1px solid #6a9955;
+      border: 1px solid rgba(106, 153, 85, 0.5);
+      border-radius: 8px;
       margin-right: 0.5rem;
+      width: 300px;
+      outline: none;
+      transition: all 0.3s ease;
+    }
+    .subscribe-form input[type="email"]:focus {
+      border-color: #6a9955;
+      box-shadow: 0 0 0 2px rgba(106, 153, 85, 0.3);
     }
     .subscribe-form button {
-      padding: 0.5rem 1rem;
+      padding: 12px 25px;
       font-size: 1rem;
-      background: #6a9955;
+      background: linear-gradient(135deg, #6a9955 0%, #4a7a3a 100%);
       color: #fff;
       border: none;
+      border-radius: 8px;
       cursor: pointer;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 15px rgba(106, 153, 85, 0.3);
     }
     .subscribe-form button:hover {
-      background: #4a7a3a;
+      background: linear-gradient(135deg, #5a8a45 0%, #3a6a2a 100%);
+      transform: translateY(-2px);
     }
-    .subscribe-form p {
+    .subscribe-form button:disabled {
+      background: #444;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .message {
+      margin: 1rem 0;
+      padding: 10px 15px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .success {
+      background: rgba(106, 153, 85, 0.2);
+      color: #6a9955;
+      border: 1px solid rgba(106, 153, 85, 0.5);
+    }
+    .error {
+      background: rgba(255, 85, 85, 0.2);
       color: #ff5555;
-      margin: 0.5rem 0;
+      border: 1px solid rgba(255, 85, 85, 0.5);
     }
     .popup {
       display: none;
@@ -315,60 +470,122 @@ app.get('/', (req, res) => {
       height: 100%;
       background: rgba(0,0,0,0.7);
       z-index: 1000;
+      backdrop-filter: blur(5px);
     }
     .popup-content {
-      background: #1e1e1e;
-      border: 1px solid #6a9955;
-      padding: 20px;
-      width: 80%;
-      max-width: 600px;
+      background: rgba(30, 30, 30, 0.95);
+      border: 1px solid rgba(106, 153, 85, 0.5);
+      border-radius: 16px;
+      padding: 30px;
+      width: 90%;
+      max-width: 700px;
       max-height: 80vh;
       overflow-y: auto;
-      margin: 10% auto;
+      margin: 10vh auto;
       position: relative;
+      box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+      backdrop-filter: blur(10px);
     }
     .popup-content h2 {
       color: #6a9955;
       margin-top: 0;
+      text-align: center;
     }
     .popup-content button {
-      background: #6a9955;
+      background: linear-gradient(135deg, #6a9955 0%, #4a7a3a 100%);
       color: #fff;
       border: none;
-      padding: 0.5rem 1rem;
+      padding: 12px 25px;
+      border-radius: 8px;
       cursor: pointer;
       margin: 1rem 0.5rem 0 0;
+      transition: all 0.3s ease;
     }
     .popup-content button:hover {
-      background: #4a7a3a;
+      background: linear-gradient(135deg, #5a8a45 0%, #3a6a2a 100%);
+      transform: translateY(-2px);
     }
     .item-list {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
       gap: 10px;
+      margin: 20px 0;
     }
     .item-list label {
-      display: block;
-      padding: 0.5rem;
-      background: #333;
-      border: 1px solid #555;
+      display: flex;
+      align-items: center;
+      padding: 12px;
+      background: rgba(40, 40, 40, 0.8);
+      border: 1px solid rgba(106, 153, 85, 0.3);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s ease;
     }
-    .error {
-      color: #ff5555;
-      margin: 0.5rem 0;
+    .item-list label:hover {
+      background: rgba(60, 60, 60, 0.8);
+      border-color: #6a9955;
+    }
+    .item-list input[type="checkbox"] {
+      margin-right: 10px;
+      accent-color: #6a9955;
+    }
+    .header {
+      text-align: center;
+      margin: 30px 0;
+    }
+    .header h1 {
+      color: #6a9955;
+      font-size: 2.5rem;
+      margin-bottom: 10px;
+    }
+    .header p {
+      color: #a0a0a0;
+      font-size: 1.1rem;
+    }
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #a0a0a0;
+    }
+    .loading:after {
+      content: '...';
+      animation: dots 1.5s steps(5, end) infinite;
+    }
+    @keyframes dots {
+      0%, 20% { content: '.'; }
+      40% { content: '..'; }
+      60%, 100% { content: '...'; }
     }
   </style>
 </head>
 <body>
-  <h1 style="text-align:center; color:#6a9955;">Grow A Garden Live Terminal Logs</h1>
-  <div class="subscribe-form">
-    <form id="subscribe-form">
-      <input type="email" name="email" placeholder="Enter your email" required>
-      <button type="submit">Subscribe</button>
-    </form>
-    <p id="subscribe-message"></p>
+  <div class="container">
+    <div class="header">
+      <h1>Grow A Garden Notifications</h1>
+      <p>Get notified when your favorite items are back in stock or when special weather events occur</p>
+    </div>
+
+    <div class="subscribe-form">
+      <form id="subscribe-form">
+        <input type="email" name="email" placeholder="Enter your email" required>
+        <button type="submit" id="subscribe-button">Subscribe</button>
+        <div id="subscribe-message" class="message"></div>
+      </form>
+    </div>
+
+    <div id="terminal"></div>
   </div>
-  <div id="terminal"></div>
+
+  <div id="verification-popup" class="popup">
+    <div class="popup-content">
+      <h2>Verify Your Email</h2>
+      <p style="text-align: center;">We've sent a verification link to <span id="verification-email" style="font-weight: bold; color: #6a9955;"></span></p>
+      <p style="text-align: center; color: #a0a0a0;">Please check your inbox and click the verification link to continue.</p>
+      <div style="text-align: center; margin-top: 30px;">
+        <button id="resend-button" style="background: transparent; border: 1px solid #6a9955; color: #6a9955;">Resend Verification</button>
+      </div>
+    </div>
+  </div>
 
   <div id="subscribe-popup" class="popup">
     <div class="popup-content">
@@ -376,17 +593,18 @@ app.get('/', (req, res) => {
       <form id="item-selection-form" action="/subscribe" method="POST">
         <input type="hidden" name="email" id="popup-email">
         <div id="items-section">
-          <h3>Items</h3>
           <div class="item-list" id="item-list-container">
             ${Array.isArray(itemInfo) && itemInfo.length > 0 ? 
               itemInfo.map(item => `
                 <label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name || item.item_id}</label>
               `).join('') : 
-              '<p>Loading items... Please wait or refresh the page.</p>'}
+              '<div class="loading">Loading available items</div>'}
           </div>
         </div>
-        <button type="submit">Subscribe</button>
-        <p id="error-message" class="error"></p>
+        <div style="text-align: center;">
+          <button type="submit">Complete Subscription</button>
+          <div id="error-message" class="message error" style="display: none;"></div>
+        </div>
       </form>
     </div>
   </div>
@@ -396,12 +614,19 @@ app.get('/', (req, res) => {
     const terminal = document.getElementById('terminal');
     const socket = io();
     const subscribeForm = document.getElementById('subscribe-form');
-    const popup = document.getElementById('subscribe-popup');
+    const subscribeButton = document.getElementById('subscribe-button');
+    const subscribeMessage = document.getElementById('subscribe-message');
+    const verificationPopup = document.getElementById('verification-popup');
+    const verificationEmail = document.getElementById('verification-email');
+    const resendButton = document.getElementById('resend-button');
+    const subscribePopup = document.getElementById('subscribe-popup');
     const itemForm = document.getElementById('item-selection-form');
     const popupEmail = document.getElementById('popup-email');
     const errorMessage = document.getElementById('error-message');
     const itemListContainer = document.getElementById('item-list-container');
-    const subscribeMessage = document.getElementById('subscribe-message');
+
+    let currentEmail = '';
+    let verificationTimer = null;
 
     socket.on('log', msg => {
       terminal.textContent += msg + '\\n';
@@ -412,9 +637,13 @@ app.get('/', (req, res) => {
       e.preventDefault();
       const email = subscribeForm.querySelector('input[name="email"]').value.trim();
       if (!email) {
-        subscribeMessage.textContent = 'Email cannot be empty.';
+        showMessage('Email cannot be empty.', 'error');
         return;
       }
+
+      currentEmail = email;
+      subscribeButton.disabled = true;
+      subscribeButton.textContent = 'Sending...';
 
       try {
         const response = await fetch('/request-verification', {
@@ -424,16 +653,46 @@ app.get('/', (req, res) => {
         });
         
         const result = await response.json();
-        subscribeMessage.textContent = result.message;
+        showMessage(result.message, result.success ? 'success' : 'error');
         
         if (result.success) {
-          // Show the popup immediately while waiting for verification
-          popupEmail.value = email;
-          popup.style.display = 'block';
+          verificationEmail.textContent = email;
+          verificationPopup.style.display = 'block';
+          startVerificationTimer();
         }
       } catch (err) {
-        subscribeMessage.textContent = 'Error sending verification request.';
+        showMessage('Error sending verification request.', 'error');
         console.error('Error:', err);
+      } finally {
+        subscribeButton.disabled = false;
+        subscribeButton.textContent = 'Subscribe';
+      }
+    };
+
+    resendButton.onclick = async function() {
+      resendButton.disabled = true;
+      resendButton.textContent = 'Sending...';
+      
+      try {
+        const response = await fetch('/request-verification', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: currentEmail })
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+          showMessage('New verification email sent!', 'success', verificationPopup);
+          startVerificationTimer();
+        } else {
+          showMessage(result.message || 'Failed to resend.', 'error', verificationPopup);
+        }
+      } catch (err) {
+        showMessage('Error resending verification.', 'error', verificationPopup);
+        console.error('Error:', err);
+      } finally {
+        resendButton.disabled = false;
+        resendButton.textContent = 'Resend Verification';
       }
     };
 
@@ -443,7 +702,7 @@ app.get('/', (req, res) => {
       const itemCheckboxes = document.querySelectorAll('input[name="items"]:checked');
       
       if (itemCheckboxes.length === 0) {
-        errorMessage.textContent = 'Please select at least one item.';
+        showError('Please select at least one item.');
         return;
       }
 
@@ -458,44 +717,112 @@ app.get('/', (req, res) => {
         
         const result = await response.json();
         if (result.success) {
-          popup.style.display = 'none';
-          subscribeMessage.textContent = 'Successfully subscribed!';
+          subscribePopup.style.display = 'none';
+          verificationPopup.style.display = 'none';
+          showMessage('Successfully subscribed! You will now receive notifications.', 'success');
         } else {
-          errorMessage.textContent = result.message || 'Subscription failed.';
+          showError(result.message || 'Subscription failed.');
         }
       } catch (err) {
-        errorMessage.textContent = 'Error completing subscription.';
+        showError('Error completing subscription.');
         console.error('Error:', err);
       }
     };
 
-    // Close popup when clicking outside
-    popup.addEventListener('click', function(e) {
-      if (e.target === popup) {
-        popup.style.display = 'none';
+    function showMessage(text, type, container = subscribeForm) {
+      const msgElement = container.querySelector('.message') || subscribeMessage;
+      msgElement.textContent = text;
+      msgElement.className = 'message ' + type;
+      msgElement.style.display = 'block';
+    }
+
+    function showError(text) {
+      errorMessage.textContent = text;
+      errorMessage.style.display = 'block';
+      setTimeout(() => {
+        errorMessage.style.display = 'none';
+      }, 5000);
+    }
+
+    function startVerificationTimer() {
+      if (verificationTimer) {
+        clearInterval(verificationTimer);
       }
+      
+      // Check every 5 seconds if email was verified
+      verificationTimer = setInterval(async () => {
+        try {
+          const response = await fetch('/check-verification?email=' + encodeURIComponent(currentEmail));
+          const result = await response.json();
+          
+          if (result.verified) {
+            clearInterval(verificationTimer);
+            verificationPopup.style.display = 'none';
+            popupEmail.value = currentEmail;
+            subscribePopup.style.display = 'block';
+            
+            // Reload items if not loaded
+            if (itemListContainer.textContent.includes('Loading')) {
+              const response = await fetch(itemInfoURL);
+              const data = await response.json();
+              const items = Object.values(data).filter(item => item && item.item_id && typeof item.item_id === 'string');
+              
+              itemListContainer.innerHTML = items.map(item => `
+                <label><input type="checkbox" name="items" value="${item.item_id}"> ${item.display_name || item.item_id}</label>
+              `).join('');
+            }
+          }
+        } catch (err) {
+          console.error('Error checking verification:', err);
+        }
+      }, 5000);
+    }
+
+    // Close popups when clicking outside
+    [verificationPopup, subscribePopup].forEach(popup => {
+      popup.addEventListener('click', function(e) {
+        if (e.target === popup) {
+          popup.style.display = 'none';
+          if (verificationTimer) {
+            clearInterval(verificationTimer);
+          }
+        }
+      });
     });
 
+    // Handle page load with URL parameters
     const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('subscribed')) {
-      subscribeMessage.textContent = 'Successfully subscribed!';
+    if (urlParams.get('verified') && urlParams.get('email')) {
+      currentEmail = urlParams.get('email');
+      popupEmail.value = currentEmail;
+      subscribePopup.style.display = 'block';
+    } else if (urlParams.get('subscribed')) {
+      showMessage('Successfully subscribed!', 'success');
     } else if (urlParams.get('unsubscribed')) {
-      subscribeMessage.textContent = 'Successfully unsubscribed!';
-    } else if (urlParams.get('verified')) {
-      popupEmail.value = urlParams.get('email');
-      popup.style.display = 'block';
+      showMessage('Successfully unsubscribed.', 'success');
     }
 
     // Refresh item list if it's empty (in case itemInfo wasn't loaded yet)
-    if (itemListContainer.textContent.includes('Loading items')) {
+    if (itemListContainer.textContent.includes('Loading')) {
       setTimeout(() => {
-        window.location.reload();
+        fetch('/refresh-items').then(() => window.location.reload());
       }, 3000);
     }
   </script>
 </body>
 </html>
   `);
+});
+
+app.get('/check-verification', (req, res) => {
+  const email = req.query.email?.trim();
+  if (!email) {
+    return res.json({ verified: false });
+  }
+  
+  // Check if email is in verifiedEmails map
+  const isVerified = verifiedEmails.has(email);
+  res.json({ verified: isVerified });
 });
 
 app.post('/request-verification', express.json(), async (req, res) => {
@@ -510,7 +837,7 @@ app.post('/request-verification', express.json(), async (req, res) => {
   sendVerificationEmail(email);
   res.json({ 
     success: true, 
-    message: 'Verification email sent. Please check your inbox and click the verification link to continue.'
+    message: 'Verification email sent. Please check your inbox.'
   });
 });
 
@@ -526,6 +853,7 @@ app.get('/verify', (req, res) => {
   }
 
   pendingVerifications.delete(email);
+  verifiedEmails.set(email, { verified: true, timestamp: Date.now() });
   res.redirect(`/?verified=true&email=${encodeURIComponent(email)}`);
 });
 
@@ -537,6 +865,10 @@ app.post('/subscribe', express.json(), (req, res) => {
     return res.json({ success: false, message: 'Invalid input' });
   }
 
+  if (!verifiedEmails.has(email)) {
+    return res.json({ success: false, message: 'Email not verified' });
+  }
+
   subscriptions.set(email, new Set(items));
   broadcastLog(`New subscription: ${email} for ${items.length} items`);
   res.json({ success: true, message: 'Subscription successful!' });
@@ -545,11 +877,17 @@ app.post('/subscribe', express.json(), (req, res) => {
 app.get('/unsub', (req, res) => {
   const email = req.query.email?.trim();
   if (subscriptions.delete(email)) {
+    verifiedEmails.delete(email);
     broadcastLog(`Unsubscribed: ${email}`);
     res.redirect('/?unsubscribed=true');
   } else {
     res.send('Email not found in subscriptions.');
   }
+});
+
+app.get('/refresh-items', async (req, res) => {
+  await fetchItemInfo();
+  res.send('Items refreshed');
 });
 
 server.listen(PORT, () => {
