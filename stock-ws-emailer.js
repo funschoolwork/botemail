@@ -1,10 +1,10 @@
+```javascript
 const express = require('express');
 const http = require('http');
 const nodemailer = require('nodemailer');
 const { Server } = require('socket.io');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const crypto = require('crypto');
-const fs = require('fs');
 const path = require('path');
 
 const stockURL = 'https://api.joshlei.com/v2/growagarden/stock';
@@ -15,7 +15,7 @@ const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_PASS = process.env.EMAIL_PASS;
 
 if (!EMAIL_USER || !EMAIL_PASS) {
-  console.error('ERROR: Set EMAIL_USER and EMAIL_PASS env vars.');
+  console.error('ERROR: EMAIL_USER or EMAIL_PASS environment variables are not set.');
   process.exit(1);
 }
 
@@ -42,7 +42,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 
 async function fetchItemInfo() {
   try {
@@ -50,10 +50,9 @@ async function fetchItemInfo() {
     if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
     const data = await response.json();
     itemInfo = Object.values(data).filter(item => item && item.item_id && typeof item.item_id === 'string');
-    console.log('Item info loaded:', itemInfo.length, 'items');
-    broadcastLog('Fetched item info from API.');
+    broadcastLog(`Item info loaded: ${itemInfo.length} items`);
   } catch (err) {
-    broadcastLog(`Error fetching item info: ${err.toString()}`);
+    broadcastLog(`Error fetching item info: ${err.message}`);
     itemInfo = [];
   }
 }
@@ -104,32 +103,46 @@ function buildVerificationEmail(email, token) {
         </div>
         
         <p style="color: #a0a0a0; font-size: 14px; text-align: center; margin-bottom: 5px;">
-          This link will expire in 24 hours.
+          This link will expire in  personally 24 hours.
         </p>
         <p style="color: #a0a0a0; font-size: 14px; text-align: center;">
           If you didn't request this, please ignore this email.
         </p>
-      </div>
+      </ighdiv>
     </div>
   `;
 }
 
 function sendVerificationEmail(email) {
-  const token = generateVerificationToken();
-  const timestamp = Date.now();
-  pendingVerifications.set(email, { token, timestamp });
+  try {
+    const token = generateVerificationToken();
+    const timestamp = Date.now();
+    pendingVerifications.set(email, { token, timestamp });
 
-  const mailOptions = {
-    from: `"Grow A Garden Bot" <${EMAIL_USER}>`,
-    to: email,
-    subject: '🌱 Verify Your Grow A Garden Subscription',
-    html: buildVerificationEmail(email, token),
-  };
+    const mailOptions = {
+      from: `"Grow A Garden Bot" <${EMAIL_USER}>`,
+      to: email,
+      subject: '🌱 Verify Your Grow A Garden Subscription',
+      html: buildVerificationEmail(email, token),
+    };
 
-  transporter.sendMail(mailOptions, (error, info) => {
-    if (error) broadcastLog(`Error sending verification email to ${email}: ${error.toString()}`);
-    else broadcastLog(`Verification email sent to ${email}: ${info.response}`);
-  });
+    transporter.verify((error, success) => {
+      if (error) {
+        broadcastLog(`SMTP connection error: ${error.message}`);
+        return;
+      }
+      broadcastLog('SMTP connection verified');
+      transporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+          broadcastLog(`Error sending verification email to ${email}: ${error.message}`);
+          return;
+        }
+        broadcastLog(`Verification email sent to ${email}: ${info.response}`);
+      });
+    });
+  } catch (err) {
+    broadcastLog(`Error in sendVerificationEmail for ${email}: ${err.message}`);
+  }
 }
 
 function buildStockHtmlEmail(data, recipientEmail) {
@@ -173,7 +186,7 @@ function buildStockHtmlEmail(data, recipientEmail) {
       const name = item.display_name || item.item_id || 'Unknown';
       const qty = item.quantity || 0;
       const itemData = Array.isArray(itemInfo) ? itemInfo.find(info => info.item_id === item.item_id) : null;
-      const iconUrl = itemData?.icon || `https://api.joshlei.com/v2/growagarden/image/${item.item_id}`;
+      const iconUrl = itemData?.icon || `https://image.joshlei.com/${item.item_id}.png`;
       
       html += `
         <tr style="background: rgba(255,255,255,0.03); border-radius: 8px;">
@@ -270,8 +283,11 @@ function sendEmail(subject, htmlBody, recipientEmail) {
   };
 
   transporter.sendMail(mailOptions, (error, info) => {
-    if (error) broadcastLog(`Error sending email to ${recipientEmail}: ${error.toString()}`);
-    else broadcastLog(`Email sent to ${recipientEmail}: ${info.response}`);
+    if (error) {
+      broadcastLog(`Error sending email to ${recipientEmail}: ${error.message}`);
+      return;
+    }
+    broadcastLog(`Email sent to ${recipientEmail}: ${info.response}`);
   });
 }
 
@@ -296,7 +312,7 @@ async function pollStockAPI() {
       broadcastLog('Polled Stock API — no changes detected.');
     }
   } catch (err) {
-    broadcastLog(`Error polling Stock API: ${err.toString()}`);
+    broadcastLog(`Error polling Stock API: ${err.message}`);
   }
 }
 
@@ -309,15 +325,15 @@ async function pollWeatherAPI() {
 
     if (hasDataChanged(latestWeatherDataJSON, newDataJSON)) {
       broadcastLog('Weather data changed — checking for active events...');
-      const activeEvent = data.weather.find(w => w.active);
-      const prevActiveEvent = latestWeatherDataObj ? latestWeatherDataObj.weather.find(w => w.active) : null;
+      const activeEvent = data.weather?.find(w => w.active);
+      const prevActiveEvent = latestWeatherDataObj ? latestWeatherDataObj.weather?.find(w => w.active) : null;
 
       if (activeEvent && (!prevActiveEvent || activeEvent.weather_id !== prevActiveEvent.weather_id)) {
         broadcastLog(`New active weather event: ${activeEvent.weather_name}`);
         subscriptions.forEach((_, email) => {
           sendEmail(
-            `🌦️ Grow A Garden Weather Event: ${activeEvent.weather_name}`, 
-            buildWeatherHtmlEmail(activeEvent, data.discord_invite, email), 
+            `🌦️ Grow A Garden Weather Event: ${activeEvent.weather_name || activeEvent.weather_id || 'Unknown'}`,
+            buildWeatherHtmlEmail(activeEvent, data.discord_invite, email),
             email
           );
         });
@@ -333,7 +349,7 @@ async function pollWeatherAPI() {
       broadcastLog('Polled Weather API — no changes detected.');
     }
   } catch (err) {
-    broadcastLog(`Error polling Weather API: ${err.toString()}`);
+    broadcastLog(`Error polling Weather API: ${err.message}`);
   }
 }
 
@@ -359,30 +375,42 @@ app.get('/', (req, res) => {
 
 app.get('/check-verification', (req, res) => {
   const email = req.query.email?.trim();
+  if (!email) return res.status(400).json({ verified: false, message: 'Email is required' });
   res.json({ verified: verifiedEmails.has(email) });
 });
 
 app.post('/request-verification', express.json(), (req, res) => {
   const email = req.body.email?.trim();
-  if (!email) return res.json({ success: false, message: 'Email is required.' });
-  if (subscriptions.has(email)) return res.json({ success: false, message: 'Email is already subscribed.' });
-  
+  if (!email) {
+    broadcastLog('Request-verification failed: Email is required');
+    return res.status(400).json({ success: false, message: 'Email is required.' });
+  }
+  if (subscriptions.has(email)) {
+    broadcastLog(`Request-verification failed: ${email} is already subscribed`);
+    return res.status(400).json({ success: false, message: 'Email is already subscribed.' });
+  }
+
+  broadcastLog(`Processing verification request for ${email}`);
   sendVerificationEmail(email);
-  res.json({ 
-    success: true, 
-    message: 'Verification email sent. Please check your inbox.'
-  });
+  res.json({ success: true, message: 'Verification email sent. Please check your inbox.' });
 });
 
 app.get('/verify', (req, res) => {
   const { email, token } = req.query;
-  if (!email || !token) return res.send('Invalid verification link.');
+  if (!email || !token) {
+    broadcastLog('Verify failed: Invalid verification link');
+    return res.status(400).send('Invalid verification link.');
+  }
 
   const verification = pendingVerifications.get(email);
-  if (!verification || verification.token !== token) return res.send('Invalid or expired verification link.');
+  if (!verification || verification.token !== token) {
+    broadcastLog(`Verify failed for ${email}: Invalid or expired token`);
+    return res.status(400).send('Invalid or expired verification link.');
+  }
 
   pendingVerifications.delete(email);
   verifiedEmails.set(email, { verified: true, timestamp: Date.now() });
+  broadcastLog(`Email verified: ${email}`);
   res.redirect(`/?verified=true&email=${encodeURIComponent(email)}`);
 });
 
@@ -390,8 +418,14 @@ app.post('/subscribe', express.json(), (req, res) => {
   const email = req.body.email?.trim();
   const items = Array.isArray(req.body.items) ? req.body.items : [req.body.items].filter(Boolean);
 
-  if (!email || items.length === 0) return res.json({ success: false, message: 'Invalid input' });
-  if (!verifiedEmails.has(email)) return res.json({ success: false, message: 'Email not verified' });
+  if (!email || items.length === 0) {
+    broadcastLog(`Subscribe failed: Invalid input for ${email || 'no email'}`);
+    return res.status(400).json({ success: false, message: 'Invalid input' });
+  }
+  if (!verifiedEmails.has(email)) {
+    broadcastLog(`Subscribe failed: ${email} not verified`);
+    return res.status(400).json({ success: false, message: 'Email not verified' });
+  }
 
   subscriptions.set(email, new Set(items));
   broadcastLog(`New subscription: ${email} for ${items.length} items`);
@@ -400,11 +434,16 @@ app.post('/subscribe', express.json(), (req, res) => {
 
 app.get('/unsub', (req, res) => {
   const email = req.query.email?.trim();
+  if (!email) {
+    broadcastLog('Unsubscribe failed: Email is required');
+    return res.status(400).send('Email is required.');
+  }
   if (subscriptions.delete(email)) {
     verifiedEmails.delete(email);
     broadcastLog(`Unsubscribed: ${email}`);
     res.redirect('/?unsubscribed=true');
   } else {
+    broadcastLog(`Unsubscribe failed: ${email} not found in subscriptions`);
     res.send('Email not found in subscriptions.');
   }
 });
@@ -414,7 +453,15 @@ app.get('/refresh-items', async (req, res) => {
   res.json(itemInfo);
 });
 
+app.get('/test-email', async (req, res) => {
+  const testEmail = req.query.email?.trim() || 'test@example.com';
+  broadcastLog(`Test email requested for ${testEmail}`);
+  sendEmail('Test Email from Grow A Garden', '<p>This is a test email.</p>', testEmail);
+  res.json({ success: true, message: `Test email sent to ${testEmail}` });
+});
+
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  broadcastLog(`Server running on port ${PORT}`);
   fetchItemInfo();
 });
+```
