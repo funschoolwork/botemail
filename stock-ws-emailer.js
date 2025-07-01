@@ -2,6 +2,8 @@ const express = require('express');
 const http = require('http');
 const nodemailer = require('nodemailer');
 const { Server } = require('socket.io');
+const fs = require('fs').promises;
+const path = require('path');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const stockURL = 'https://api.joshlei.com/v2/growagarden/stock';
@@ -27,8 +29,87 @@ let latestWeatherDataJSON = null;
 let latestWeatherDataObj = null;
 let itemInfo = null;
 
-// Store subscriptions with selected items
-const subscriptions = new Map(); // Map<email, { seeds: Set<item_id>, gear: Set<item_id> }>
+// Persistent storage setup
+const STORAGE_FILE = path.join(__dirname, 'subscriptions.json');
+
+class SubscriptionStore {
+  constructor() {
+    this.store = new Map();
+    this.ready = this.load();
+  }
+
+  async load() {
+    try {
+      const data = await fs.readFile(STORAGE_FILE, 'utf8');
+      const entries = JSON.parse(data);
+      this.store = new Map(entries.map(([email, items]) => [
+        email, 
+        {
+          seeds: new Set(items.seeds),
+          gear: new Set(items.gear)
+        }
+      ]));
+      console.log(`Loaded ${this.store.size} subscriptions from storage`);
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        console.error('Error loading subscriptions:', err);
+      }
+    }
+  }
+
+  async save() {
+    try {
+      const data = JSON.stringify(
+        Array.from(this.store.entries()).map(([email, items]) => [
+          email,
+          {
+            seeds: Array.from(items.seeds),
+            gear: Array.from(items.gear)
+          }
+        ])
+      );
+      await fs.writeFile(STORAGE_FILE, data);
+    } catch (err) {
+      console.error('Error saving subscriptions:', err);
+    }
+  }
+
+  async set(email, items) {
+    this.store.set(email, {
+      seeds: new Set(items.seeds),
+      gear: new Set(items.gear)
+    });
+    await this.save();
+  }
+
+  async delete(email) {
+    const result = this.store.delete(email);
+    await this.save();
+    return result;
+  }
+
+  get(email) {
+    return this.store.get(email);
+  }
+
+  has(email) {
+    return this.store.has(email);
+  }
+
+  get size() {
+    return this.store.size;
+  }
+
+  forEach(callback) {
+    return this.store.forEach(callback);
+  }
+
+  [Symbol.iterator]() {
+    return this.store[Symbol.iterator]();
+  }
+}
+
+const subscriptions = new SubscriptionStore();
 
 const app = express();
 const server = http.createServer(app);
@@ -404,7 +485,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-app.post('/subscribe', (req, res) => {
+app.post('/subscribe', async (req, res) => {
   const email = req.body.email ? req.body.email.trim() : '';
   if (!email) {
     return res.redirect('/?error=' + encodeURIComponent('Email cannot be empty.'));
@@ -420,20 +501,20 @@ app.post('/subscribe', (req, res) => {
     return res.redirect('/?error=' + encodeURIComponent('Please select at least one item.'));
   }
 
-  subscriptions.set(email, {
-    seeds: new Set(seeds),
-    gear: new Set(gear)
+  await subscriptions.set(email, {
+    seeds: seeds,
+    gear: gear
   });
   broadcastLog(`New subscriber: ${email} with ${seeds.length} seeds and ${gear.length} gear selected`);
   res.redirect('/?subscribed=true');
 });
 
-app.get('/unsub', (req, res) => {
+app.get('/unsub', async (req, res) => {
   const email = req.query.email;
   if (!email || !subscriptions.has(email)) {
     return res.redirect('/?error=' + encodeURIComponent('Email not found in subscription list.'));
   }
-  subscriptions.delete(email);
+  await subscriptions.delete(email);
   broadcastLog(`Unsubscribed: ${email}`);
   res.redirect('/?unsubscribed=true');
 });
